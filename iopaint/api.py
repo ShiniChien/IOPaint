@@ -269,6 +269,12 @@ class Api:
         return GenInfoResponse(prompt=prompt, negative_prompt=negative_prompt)
 
     def api_inpaint(self, req: InpaintRequest):
+        # import pickle
+        # with open("/home/misa/Desktop/Old/IOPaint/tests/image.pkl", "wb") as f:
+        #     pickle.dump(req.image, f)
+        # with open("/home/misa/Desktop/Old/IOPaint/tests/mask.pkl", "wb") as f:
+        #     pickle.dump(req.mask, f)
+        
         image, alpha_channel, infos, ext = decode_base64_to_image(req.image)
         mask, _, _, _ = decode_base64_to_image(req.mask, gray=True)
         logger.info(f"image ext: {ext}")
