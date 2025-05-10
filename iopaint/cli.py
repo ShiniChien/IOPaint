@@ -21,6 +21,7 @@ from iopaint.runtime import setup_model_dir, dump_environment_info, check_device
 from iopaint.schema import InteractiveSegModel, Device, RealESRGANModel, RemoveBGModel, InpaintRequest
 from iopaint.model_manager import ModelManager
 from iopaint.model.utils import torch_gc
+from iopaint.download import cli_download_model, scan_models
 from iopaint.helper import decode_base64_to_image, concat_alpha_channel
 
 typer_app = typer.Typer(pretty_exceptions_show_locals=False, add_completion=False)
@@ -239,118 +240,146 @@ def start(
     api = Api(app, api_config)
     api.launch()
 
+API_KEY = "transwise-inpaint"
 
-@typer_app.command(name="gradio")
-def start_gradio(
-    device: Device = Option(Device.cpu, help="Device to run the model on"),
-    quality: int = Option(100, help="Output image quality"),
-    model_dir: Path = Option(
-        DEFAULT_MODEL_DIR,
-        help=MODEL_DIR_HELP,
-        file_okay=False,
-        callback=setup_model_dir,
-    ),
-):
-    """Start a Gradio app for anime-lama inpainting using base64 encoded images and masks."""
+@typer_app.command(name="runpod")
+def start_runpod_api(device: Device = Option(Device.cpu)):
+    import io
+    import json
+    import time
+    from fastapi import FastAPI, UploadFile, Header, File, Form, HTTPException
+    from fastapi.responses import Response
+    from PIL import Image, ImageOps
+    from iopaint.helper import get_image_ext, concat_alpha_channel, pil_to_bytes
+    from iopaint.schema import RunpodInpaintRequest
+    
     dump_environment_info()
     device = check_device(device)
     logger.info(f"Using device: {device}")
     
-    # Initialize the model on CPU first
-    model_manager = ModelManager(
-        name="anime-lama",
-        device=torch.device("cpu"),
+    scanned_models = scan_models()
+    for model in ["lama", "anime-lama"]:
+        if model not in [it.name for it in scanned_models]:
+            logger.info(f"{model} not found, try to downloading")
+            cli_download_model(model)
+    
+    lama_model_manager = ModelManager(
+        name="lama",
+        device=device,
         no_half=False,
         low_mem=False
     )
-    logger.info("Model initialized on CPU")
+    anime_lama_model_manager = ModelManager(
+        name="anime-lama",
+        device=device,
+        no_half=False,
+        low_mem=False
+    )
+    logger.info("Model initialized")
     
-    # Create a request object template
-    request_template = InpaintRequest()
-    
-    @spaces.GPU(duration=5)
-    def process_inpaint(image_base64: str, mask_base64: str, hd_strategy: str):
-        try:
-            # Move model to GPU when processing
-            if str(device) == "cuda":
-                logger.info("Moving model to GPU")
-                model_manager.device = torch.device("cuda")
-            
-            # Create request object
-            req = request_template.model_copy()
-            req.image = image_base64
-            req.mask = mask_base64
-            req.hd_strategy = hd_strategy
-            
-            # Process inpainting similar to api_inpaint in iopaint/api.py
-            image, alpha_channel, infos, ext = decode_base64_to_image(req.image)
-            mask, _, _, _ = decode_base64_to_image(req.mask, gray=True)
-            logger.info(f"Image shape: {image.shape}, Mask shape: {mask.shape}")
-            
-            # Apply threshold to mask
-            mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
-            
-            # Validate image and mask dimensions match
-            if image.shape[:2] != mask.shape[:2]:
-                return None, f"Error: Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) do not match."
-            
-            # Process with model
-            logger.info("Running inpainting...")
-            start = time.time()
-            bgr_np_img = model_manager(image, mask, req)
-            logger.info(f"Inpainting completed in {(time.time() - start) * 1000:.2f}ms")
-            rgb_np_img = cv2.cvtColor(bgr_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
-            
-            # Convert BGR to RGB and handle alpha channel
-            result = concat_alpha_channel(rgb_np_img, alpha_channel)
-            
-            # Move model back to CPU
-            if str(device) == "cuda":
-                logger.info("Moving model back to CPU")
-                model_manager.device = torch.device("cpu")
-                torch_gc()
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
 
-            
-            return Image.fromarray(result), None
-            
-        except Exception as e:
-            logger.error(f"Error during inpainting: {str(e)}")
-            # Move model back to CPU in case of error
-            if str(device) == "cuda":
-                model_manager.device = torch.device("cpu")
-                torch_gc()
-            return None, f"Error: {str(e)}"
+    app = FastAPI(
+        lifespan=lifespan,
+        docs_url="/tw-docs",
+        redoc_url="/tw-redoc",
+    )
     
-    # Create Gradio interface
-    with gr.Blocks() as app:
-        gr.Markdown("# Anime-LaMa Inpainting")
-        gr.Markdown("### Nhập ảnh và mask dưới dạng base64")
+    def process_uploaded_image(image_bytes, gray=False):
+        """Convert uploaded image to numpy array"""
+        ext = get_image_ext(image_bytes)
+        image = Image.open(io.BytesIO(image_bytes))
         
-        with gr.Row():
-            with gr.Column():
-                image_input = gr.TextArea(label="Base64 Image")
-                mask_input = gr.TextArea(label="Base64 Mask")
-                hd_strategy = gr.Radio(
-                    label="HD Strategy",
-                    choices=["Original", "Resize", "Crop"],
-                    value="Crop",
-                    type="value",
-                )
-                with gr.Row():
-                    submit_btn = gr.Button("Inpaint", variant="primary")
-            
-            with gr.Column():
-                result_image = gr.Image(label="Result", type="pil")
-                error_output = gr.Textbox(label="Error (if any)", visible=True)
+        alpha_channel = None
+        try:
+            image = ImageOps.exif_transpose(image)
+        except:
+            pass
+        infos = image.info
         
-        submit_btn.click(
-            fn=process_inpaint,
-            inputs=[image_input, mask_input, hd_strategy],
-            outputs=[result_image, error_output]
+        if gray:
+            image = image.convert("L")
+            np_img = np.array(image)
+        else:
+            if image.mode == "RGBA":
+                np_img = np.array(image)
+                alpha_channel = np_img[:, :, -1]
+                np_img = cv2.cvtColor(np_img, cv2.COLOR_RGBA2RGB)
+            else:
+                image = image.convert("RGB")
+                np_img = np.array(image)
+        
+        return np_img, alpha_channel, infos, ext
+    
+    @app.post("/inpaint")
+    async def runpod_inpaint(
+        api_key: Optional[str] = Header(None),
+        image: UploadFile = File(...),
+        mask: UploadFile = File(...),
+        request_data: str = Form(...),
+    ):
+        if not API_KEY or api_key != API_KEY:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid API key"
+            )
+        # Parse request body
+        try:
+            req = RunpodInpaintRequest(**json.loads(request_data))
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid request data: {str(e)}"
+            )
+        
+        # Đọc file uploads
+        image_bytes = await image.read()
+        mask_bytes = await mask.read()
+        
+        # Convert uploaded files thành numpy arrays
+        np_img, alpha_channel, infos, ext = process_uploaded_image(image_bytes)
+        np_mask, _, _, _ = process_uploaded_image(mask_bytes, gray=True)
+        
+        # Chọn model manager dựa trên model_name
+        model_manager = lama_model_manager if req.model_name == "lama" else anime_lama_model_manager
+        
+        # Xử lý mask
+        np_mask = cv2.threshold(np_mask, 127, 255, cv2.THRESH_BINARY)[1]
+        if np_img.shape[:2] != np_mask.shape[:2]:
+            raise HTTPException(
+                400,
+                detail=f"Image size({np_img.shape[:2]}) and mask size({np_mask.shape[:2]}) not match.",
+            )
+        
+        # Xử lý inpainting
+        start = time.time()
+        rgb_np_img = model_manager(np_img, np_mask, req)
+        logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
+        torch_gc()
+        
+        # Convert kết quả và trả về
+        rgb_np_img = cv2.cvtColor(rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+        rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
+        
+        res_img_bytes = pil_to_bytes(
+            Image.fromarray(rgb_res),
+            ext=ext,
+            quality=100,
+            infos=infos,
+        )
+        
+        return Response(
+            content=res_img_bytes,
+            media_type=f"image/{ext}",
+            headers={"X-Seed": str(req.sd_seed)},
         )
     
-    # Launch the app
-    app.launch(server_name="0.0.0.0", server_port=7860)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8675)
+    
+    
 
 @typer_app.command(help="Start IOPaint web config page")
 def start_web_config(

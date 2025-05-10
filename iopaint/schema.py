@@ -447,7 +447,6 @@ class InpaintRequest(BaseModel):
 
         return values
 
-
 class RunPluginRequest(BaseModel):
     name: str
     image: str = Field(..., description="base64 encoded image")
@@ -509,3 +508,10 @@ class AdjustMaskRequest(BaseModel):
     )
     operate: AdjustMaskOperate = Field(..., description="expand/shrink/reverse")
     kernel_size: int = Field(5, description="Kernel size for expanding mask")
+    
+class RunpodModelName(Choices):
+    lama = "lama"
+    anime_lama = "anime-lama"
+
+class RunpodInpaintRequest(InpaintRequest):
+    model_name: RunpodModelName = Field(RunpodModelName.lama, description="Model name to use for inpainting")

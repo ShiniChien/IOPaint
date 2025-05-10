@@ -4,6 +4,7 @@ from typing import Optional
 import cv2
 import torch
 import numpy as np
+from tqdm import tqdm
 from loguru import logger
 
 from iopaint.helper import (
@@ -97,7 +98,7 @@ class InpaintModel:
                 logger.info("Run crop strategy")
                 boxes = boxes_from_mask(mask)
                 crop_result = []
-                for box in boxes:
+                for box in tqdm(boxes, total=len(boxes)):
                     crop_image, crop_box = self._run_box(image, mask, box, config)
                     crop_result.append((crop_image, crop_box))
 

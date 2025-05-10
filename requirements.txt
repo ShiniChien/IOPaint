@@ -15,7 +15,7 @@ typer
 pydantic>=2.5.2
 rich
 loguru
-yacs
+yacs    
 piexif==1.1.3
 omegaconf
 easydict
