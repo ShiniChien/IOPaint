@@ -1,0 +1,13 @@
+version: "3.7"
+services:
+  app:
+    image: shinichien/iopain-runpod:0.0.1
+    container_name: iopain-runpod
+    restart: always
+    network_mode: host
+    build:
+      context: .
+      dockerfile: docker/RunpodDockerfile
+    entrypoint: python main.py runpod --device cuda
+    
+    

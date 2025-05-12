@@ -1,0 +1,8 @@
+{
+    "input": {
+        "image": "image.png",
+        "mask": "mask.png",
+        "hd_strategy": "Crop",
+        "model_name": "lama"
+    }
+}
