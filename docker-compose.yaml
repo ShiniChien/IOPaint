@@ -8,6 +8,5 @@ services:
     build:
       context: .
       dockerfile: docker/RunpodDockerfile
-    entrypoint: python main.py runpod --device cuda
     
     

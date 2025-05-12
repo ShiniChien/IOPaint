@@ -1,4 +1,4 @@
-torch>=2.0.0
+numpy==1.26.4
 opencv-python
 diffusers==0.27.2
 huggingface_hub==0.25.2
@@ -21,5 +21,6 @@ omegaconf
 easydict
 typer-config==1.4.0
 runpod~=1.7.9
+google-cloud-storage==3.1.0
 
 Pillow==9.5.0 # for AnyText

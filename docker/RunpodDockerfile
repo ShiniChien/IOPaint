@@ -31,4 +31,4 @@ ENV PYTHONPATH "${PYTHONPATH}:/app"
 
 WORKDIR /app
 
-CMD ["bash"]
+CMD python main.py runpod --device cuda
